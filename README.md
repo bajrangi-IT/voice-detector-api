@@ -1,0 +1,2 @@
+# voice-detector-api
+API FOR TESTING AI OR HUMAN VOICE SAMPLE
