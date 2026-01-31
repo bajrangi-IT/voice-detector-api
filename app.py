@@ -16,6 +16,8 @@ from functools import wraps
 import threading
 import logging
 import warnings
+
+print(">>> Starting Voice Detection API...")
 warnings.filterwarnings('ignore')
 
 # ============================================================================
@@ -605,7 +607,7 @@ def method_not_allowed(error):
 @app.errorhandler(500)
 def internal_error(error):
     logger.error(f"Internal error: {error}")
-    return jsonify({'status': 'error', 'message': 'Invalid API key or malformed request'}), 500
+    return jsonify({'status': 'error', 'message': 'Internal Server Error'}), 500
 
 # ============================================================================
 # PRODUCTION DEPLOYMENT
