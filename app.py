@@ -10,6 +10,7 @@ import librosa
 import numpy as np
 import base64
 import io
+import os
 from datetime import datetime
 import hashlib
 from functools import wraps
@@ -636,9 +637,10 @@ if __name__ == '__main__':
     print("="*100 + "\n")
     
     # Production-grade server
+    port = int(os.environ.get('PORT', 5000))
     app.run(
         debug=False,
         host='0.0.0.0',
-        port=5000,
+        port=port,
         threaded=True
     )
