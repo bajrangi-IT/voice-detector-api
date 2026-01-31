@@ -6,7 +6,6 @@ Optimized for Automated Endpoint Tester
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import librosa
 import numpy as np
 import base64
 import io
@@ -15,8 +14,6 @@ from datetime import datetime
 import hashlib
 from functools import wraps
 import threading
-from scipy import stats
-from scipy.signal import find_peaks
 import logging
 import warnings
 warnings.filterwarnings('ignore')
@@ -27,6 +24,10 @@ warnings.filterwarnings('ignore')
 
 app = Flask(__name__)
 CORS(app)
+
+@app.route('/', methods=['GET'])
+def index():
+    return jsonify({"status": "live", "message": "Voice Detection API is running"}), 200
 
 # Logging setup for reliability monitoring
 logging.basicConfig(level=logging.INFO)
@@ -77,6 +78,7 @@ class EvaluationVoiceAnalyzer:
     """
     
     def __init__(self, audio_data, sr=22050):
+        import librosa # Lazy import
         self.audio = audio_data
         self.sr = sr
         self._normalize_audio()
@@ -134,6 +136,7 @@ class EvaluationVoiceAnalyzer:
     
     def _extract_spectral(self):
         """Spectral features (10 features)"""
+        import librosa # Lazy import
         S = librosa.feature.melspectrogram(y=self.audio, sr=self.sr, n_mels=128)
         S_db = librosa.power_to_db(S, ref=np.max)
         
@@ -141,6 +144,7 @@ class EvaluationVoiceAnalyzer:
         sr_feat = librosa.feature.spectral_rolloff(y=self.audio, sr=self.sr)[0]
         sc_feat = librosa.feature.spectral_contrast(y=self.audio, sr=self.sr)
         
+        from scipy import stats # Lazy import
         flux = np.sqrt(np.sum(np.diff(S_db, axis=1)**2, axis=0))
         entropy = -np.sum(np.mean(S_db, axis=1) * np.log(np.mean(S_db, axis=1) + 1e-10))
         
@@ -173,6 +177,7 @@ class EvaluationVoiceAnalyzer:
     
     def _extract_pitch(self):
         """Pitch features (8 features) - KEY AI INDICATORS"""
+        import librosa # Lazy import
         try:
             f0 = librosa.yin(self.audio, fmin=50, fmax=500, trough_threshold=0.1)
             f0_valid = f0[f0 > 0]
@@ -209,6 +214,8 @@ class EvaluationVoiceAnalyzer:
     
     def _extract_mfcc(self):
         """MFCC features (8 features)"""
+        import librosa # Lazy import
+        from scipy import stats # Lazy import
         mfcc = librosa.feature.mfcc(y=self.audio, sr=self.sr, n_mfcc=13)
         mfcc_delta = librosa.feature.delta(mfcc)
         mfcc_delta2 = librosa.feature.delta(mfcc, order=2)
@@ -233,6 +240,8 @@ class EvaluationVoiceAnalyzer:
     
     def _extract_temporal(self):
         """Temporal features (8 features)"""
+        import librosa # Lazy import
+        from scipy import stats # Lazy import
         onset_env = librosa.onset.onset_strength(y=self.audio, sr=self.sr)
         onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env, units='frames')
         
@@ -264,6 +273,7 @@ class EvaluationVoiceAnalyzer:
     
     def _extract_energy(self):
         """Energy features (6 features)"""
+        import librosa # Lazy import
         stft = np.abs(librosa.stft(self.audio))
         power = np.abs(stft) ** 2
         
@@ -286,6 +296,7 @@ class EvaluationVoiceAnalyzer:
     
     def _extract_harmonic(self):
         """Harmonic features (5 features)"""
+        import librosa # Lazy import
         try:
             D = librosa.stft(self.audio)
             H, P = librosa.decompose.hpss(D)
@@ -484,6 +495,7 @@ def detect_voice():
         
         # Load audio
         try:
+            import librosa # Lazy import
             audio, sr = librosa.load(audio_file, sr=22050, duration=30)
             
             # Validate audio length
@@ -556,6 +568,7 @@ def health_check():
 @require_api_key
 def get_stats():
     """Statistics endpoint - requires API key"""
+    import numpy as np # Lazy import
     with request_lock:
         total = len(request_logs)
         ai_count = sum(1 for log in request_logs if log['classification'] == 'AI_GENERATED')
