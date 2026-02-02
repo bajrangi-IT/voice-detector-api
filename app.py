@@ -337,74 +337,74 @@ class EvaluationClassifier:
     def classify(features):
         """
         8-signal AI detection with robust scoring
-        Optimized for evaluation system
+        Updated with tighter thresholds for advanced AI voices
         """
         ai_score = 0.0
         human_score = 0.0
         
-        # Signal 1: Pitch Consistency (Weight: 4.0) - PRIMARY AI INDICATOR
+        # Signal 1: Pitch Consistency (Weight: 4.5) - PRIMARY AI INDICATOR
         pc = features.get('pitch_consistency', 0.5)
-        if pc > 0.92:
-            ai_score += 4.0
-        elif pc > 0.78:
-            ai_score += 2.0
-        else:
-            human_score += 2.5
-        
-        # Signal 2: MFCC Variance (Weight: 3.5) - REPETITIVENESS
-        mv = features.get('mfcc_variance', 0.5)
-        if mv < 0.38:
-            ai_score += 3.5
-        elif mv < 0.52:
-            ai_score += 1.5
-        else:
-            human_score += 2.5
-        
-        # Signal 3: Onset Regularity (Weight: 3.5) - TIMING
-        onset_reg = features.get('onset_regularity', 0.5)
-        if onset_reg > 0.87:
-            ai_score += 3.5
-        elif onset_reg > 0.73:
-            ai_score += 2.0
-        else:
-            human_score += 2.5
-        
-        # Signal 4: Spectral Flux (Weight: 3.0) - SMOOTHNESS
-        sf = features.get('spectral_flux_mean', 0.2)
-        if sf < 0.11:
-            ai_score += 3.0
-        elif sf < 0.18:
-            ai_score += 1.5
-        else:
-            human_score += 2.0
-        
-        # Signal 5: Pitch Jitter (Weight: 2.5) - JITTER ABSENCE
-        pj = features.get('pitch_jitter', 0.03)
-        if pj < 0.008:
+        if pc > 0.82: # Lowered from 0.92
+            ai_score += 4.5
+        elif pc > 0.65: # Lowered from 0.78
             ai_score += 2.5
-        elif pj > 0.045:
-            human_score += 2.0
+        else:
+            human_score += 3.0
+        
+        # Signal 2: MFCC Variance (Weight: 4.0) - REPETITIVENESS
+        mv = features.get('mfcc_variance', 0.5)
+        if mv < 0.45: # Raised from 0.38
+            ai_score += 4.0
+        elif mv < 0.60: # Raised from 0.52
+            ai_score += 2.0
+        else:
+            human_score += 3.0
+        
+        # Signal 3: Onset Regularity (Weight: 4.0) - TIMING
+        onset_reg = features.get('onset_regularity', 0.5)
+        if onset_reg > 0.78: # Lowered from 0.87
+            ai_score += 4.0
+        elif onset_reg > 0.60: # Lowered from 0.73
+            ai_score += 2.0
+        else:
+            human_score += 3.0
+        
+        # Signal 4: Spectral Flux (Weight: 3.5) - SMOOTHNESS
+        sf = features.get('spectral_flux_mean', 0.2)
+        if sf < 0.14: # Raised from 0.11
+            ai_score += 3.5
+        elif sf < 0.22: # Raised from 0.18
+            ai_score += 1.5
+        else:
+            human_score += 2.5
+        
+        # Signal 5: Pitch Jitter (Weight: 3.0) - JITTER ABSENCE
+        pj = features.get('pitch_jitter', 0.03)
+        if pj < 0.012: # Raised from 0.008
+            ai_score += 3.0
+        elif pj > 0.040: # Lowered from 0.045
+            human_score += 2.5
         
         # Signal 6: Energy Ratio (Weight: 2.5) - DISTRIBUTION
         er = features.get('energy_ratio', 0.4)
-        if er < 0.22:
+        if er < 0.28: # Raised from 0.22
             ai_score += 2.5
-        elif er > 0.55:
+        elif er > 0.50: # Lowered from 0.55
             human_score += 2.0
         
-        # Signal 7: Spectral Entropy (Weight: 2.0) - COMPLEXITY
+        # Signal 7: Spectral Entropy (Weight: 2.5) - COMPLEXITY
         se = features.get('spectral_entropy', 3.0)
-        if se < 1.9:
-            ai_score += 2.0
-        elif se > 4.2:
-            human_score += 1.5
+        if se < 2.2: # Raised from 1.9
+            ai_score += 2.5
+        elif se > 4.0: # Lowered from 4.2
+            human_score += 2.0
         
-        # Signal 8: Formant Stability (Weight: 2.0)
+        # Signal 8: Formant Stability (Weight: 2.5)
         fs = features.get('formant_stability', 0.5)
-        if fs > 0.88:
-            ai_score += 2.0
-        elif fs < 0.58:
-            human_score += 1.5
+        if fs > 0.75: # Lowered from 0.88
+            ai_score += 2.5
+        elif fs < 0.50: # Lowered from 0.58
+            human_score += 2.0
         
         # Calculate confidence
         total = ai_score + human_score
@@ -421,9 +421,9 @@ class EvaluationClassifier:
         
         # Quality explanation
         if ai_score > human_score:
-            explanation = "Detected artificial voice characteristics including pitch consistency and spectral patterns"
+            explanation = "Detected artificial voice characteristics: high spectral stability and robotic timing patterns"
         else:
-            explanation = "Detected natural human speech characteristics with voice variation and complexity"
+            explanation = "Detected natural human speech characteristics with organic voice variation"
         
         return {
             'classification': classification,
