@@ -128,6 +128,9 @@ class ImprovedVoiceAnalyzer:
         sr_feat = librosa.feature.spectral_rolloff(y=self.audio, sr=self.sr)[0]
         sc_feat = librosa.feature.spectral_contrast(y=self.audio, sr=self.sr)
         
+        # Calculate spectral flux
+        flux = np.sqrt(np.sum(np.diff(S_db, axis=1)**2, axis=0))
+        
         # Fix: Use linear power for entropy to avoid 'nan' results
         S_norm = np.clip(np.mean(S, axis=1), 1e-10, None)
         S_norm = S_norm / np.sum(S_norm)
@@ -314,67 +317,59 @@ class ImprovedClassifier:
         human_score = 0.0
         
         # 1. Pitch Chaos Analysis (Weight: 6.0)
-        # Humans have micro-fluctuations; AI is often too smooth or too consistent
+        # Humans have micro-fluctuations (0.02-0.04); 
+        # AI is often too smooth (<0.015) OR has mathematical artifacts (>0.15)
         pc = features.get('pitch_consistency', 0.5)
         pj = features.get('pitch_jitter', 0.03)
         
-        if pc > 0.70: # Very stable pitch is a huge AI signal
+        if pc > 0.70: 
             ai_score += 4.5
-            if pc > 0.85: ai_score += 2.5
-        elif pc < 0.35: # Shaky pitch is very human
+            if pc > 0.82: ai_score += 2.0
+        elif pc < 0.30: 
             human_score += 3.5
             
-        if pj < 0.020: # Lack of micro-jitter
-            ai_score += 4.0
-            if pj < 0.012: ai_score += 2.0
-        elif pj > 0.040: # Natural organic jitter
+        if pj < 0.018: 
+            ai_score += 5.0
+        elif pj > 0.18: # High artifact signal
+            ai_score += 3.5
+        elif 0.022 < pj < 0.045: 
             human_score += 3.0
             
         # 2. Timing Regularity (Weight: 5.0)
-        # AI often follows a mathematical onset pattern
         onset_reg = features.get('onset_regularity', 0.5)
         if onset_reg > 0.75:
             ai_score += 5.0
-        elif onset_reg < 0.40:
+        elif onset_reg < 0.45:
             human_score += 3.5
             
-        # 3. Spectral Smoothness (Weight: 4.5)
-        # AI spectral transitions are often cleaner than biological vocal cords
+        # 3. Spectral Smoothness (Weight: 5.5)
         sf = features.get('spectral_flux_mean', 0.2)
-        if sf < 0.18:
-            ai_score += 4.5
-        elif sf > 0.30:
-            human_score += 3.0
+        if sf < 0.16:
+            ai_score += 5.5
+        elif sf > 0.28:
+            human_score += 3.5
             
         # 4. Complexity & Entropy (Weight: 4.0)
-        # Biological voices are inherently more complex (entropy)
         se = features.get('spectral_entropy', 4.0)
-        if np.isnan(se) or se < 2.5:
+        if se < 3.0:
             ai_score += 4.0
-        elif se > 7.0: # High complexity is very human
-            human_score += 3.5
+        elif se > 6.0:
+            human_score += 3.0
             
-        # 5. Harmonic Purity (Weight: 3.0)
-        # AI voices can have unnaturally high harmonic ratios
+        # 5. Harmonic Analysis
         hr = features.get('harmonic_ratio', 0.5)
-        if hr > 0.85:
-            ai_score += 3.0
-        elif hr < 0.50:
+        if hr > 0.88:
+            ai_score += 3.5
+        elif hr < 0.45:
             human_score += 2.0
             
-        # Calculate confidence
+        # Final Calculation
         total = ai_score + human_score
-        if total > 0:
-            confidence = ai_score / total
-        else:
-            confidence = 0.5
-            
-        # Ensure range
+        confidence = ai_score / total if total > 0 else 0.5
         confidence = np.clip(confidence, 0.0, 1.0)
         
-        # Classification with sensitivity adjustment
-        # Use a lower threshold for AI detection (0.45) to minimize false negatives for pro AI
-        classification = 'AI_GENERATED' if confidence > 0.45 else 'HUMAN'
+        # Balanced Threshold
+        classification = 'AI_GENERATED' if confidence > 0.48 else 'HUMAN'
         
         if classification == 'AI_GENERATED':
             explanation = "Synthetic signature detected: unnatural vocal stability and absence of organic micro-vibrations."
@@ -386,7 +381,6 @@ class ImprovedClassifier:
             'confidence': float(confidence),
             'explanation': explanation
         }
-
 # ============================================================================
 # API ENDPOINTS
 # ============================================================================
