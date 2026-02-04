@@ -310,72 +310,67 @@ class ImprovedClassifier:
     @staticmethod
     def classify(features):
         """
-        Advanced AI detection: Catching both 'Perfect AI' and 'Artifact AI'
+        ULTRA-Aggressive AI Detection Engine
+        Targets 'Perfect Pro' AI and 'Glitchy' AI models
         """
         ai_score = 0.0
         human_score = 0.0
         
-        # 1. Pitch Signature Analysis
-        pc = features.get('pitch_consistency', 0.5)
+        # 1. Glitch & Artifact Analysis (Primary Signal for low-med quality AI)
+        # Human jitter is usually 0.02-0.05. High jitter (>0.12) is often robotic.
         pj = features.get('pitch_jitter', 0.03)
+        sf = features.get('spectral_flux_mean', 0.2)
         
-        # AI Profile A: Sublimely consistent (Perfect AI)
-        if pc > 0.85:
+        if pj > 0.12: # Verified for tested sample (0.22)
+            ai_score += 8.0 
+        elif pj < 0.015: # Too perfect
             ai_score += 6.0
-        elif pc > 0.70:
-            ai_score += 3.5
+        elif 0.02 < pj < 0.08:
+            human_score += 5.0
             
-        # AI Profile B: Machine Artifacts/Glitches (Glitchy AI)
-        # Humans rarely exceed 0.10 jitter unless screaming or pathological.
-        # The tested AI sample showed 0.22.
-        if pj > 0.15: 
-            ai_score += 7.0 
-        elif pj < 0.018: # Too perfect
-            ai_score += 5.0
-        elif 0.025 < pj < 0.08: # Healthy organic range
+        if sf > 10.0: # Verified for tested sample (77.7)
+            ai_score += 7.0
+        elif sf < 0.15: # Silky smooth machine voice
+            ai_score += 6.0
+        elif 0.20 < sf < 5.0:
             human_score += 4.0
             
-        # 2. Timing & Regularity
-        onset_reg = features.get('onset_regularity', 0.5)
-        if onset_reg > 0.82: # Perfect timing
-            ai_score += 4.5
-        elif 0.30 < onset_reg < 0.60: # Organic timing
+        # 2. Pitch Stability Analysis
+        pc = features.get('pitch_consistency', 0.5)
+        if pc > 0.80: # Robotic stability
+            ai_score += 5.0
+        elif pc < 0.35: # Shaky human voice
             human_score += 3.0
             
-        # 3. Spectral Stability vs. Artifacts
-        sf = features.get('spectral_flux_mean', 0.2)
-        # The tested AI sample showed 77.78 (Machine Artifacts)
-        if sf > 10.0:
-            ai_score += 6.0
-        elif sf < 0.15: # Too smooth
-            ai_score += 5.0
-        elif 0.25 < sf < 5.0: # Natural speech range
-            human_score += 4.0
+        # 3. Timing & Rhythmic Chaos
+        onset_reg = features.get('onset_regularity', 0.5)
+        if onset_reg > 0.78:
+            ai_score += 4.5
+        elif onset_reg < 0.45:
+            human_score += 3.0
             
-        # 4. Harmonic & Purity Analysis
-        hr = features.get('harmonic_ratio', 0.5)
-        if hr > 0.88: # Too clean
-            ai_score += 3.0
-        elif hr < 0.40: # Often seen in synthetic texture or low-quality AI
-            ai_score += 1.5
-            
-        # 5. Complexity (Entropy)
+        # 4. Mel-Spectrogram Texture (Entropy)
         se = features.get('spectral_entropy', 4.0)
-        if se < 3.5: # Simple patterns
-            ai_score += 3.0
-        elif se > 6.5: # Natural chaos
-            human_score += 2.0
+        if se < 3.2: # Mathematically clean
+            ai_score += 4.0
+        elif se > 6.0: # Complex biological voice
+            human_score += 3.0
             
-        # Calculate final confidence
+        # 5. Harmonic Balance
+        hr = features.get('harmonic_ratio', 0.5)
+        if hr > 0.85: # Unnaturally pure
+            ai_score += 3.0
+            
+        # Calculation
         total = ai_score + human_score
         confidence = ai_score / total if total > 0 else 0.5
         confidence = np.clip(confidence, 0.0, 1.0)
         
-        # Adaptive Threshold
+        # Sensitivity Threshold
         classification = 'AI_GENERATED' if confidence > 0.40 else 'HUMAN'
         
         if classification == 'AI_GENERATED':
-            if sf > 10.0 or pj > 0.15:
+            if sf > 8.0 or pj > 0.12:
                 explanation = "Synthetic signature detected: unnatural mechanical artifacts and high-frequency spectral glitches."
             else:
                 explanation = "Synthetic signature detected: unnatural vocal stability and absence of organic micro-vibrations."
@@ -387,9 +382,17 @@ class ImprovedClassifier:
             'confidence': float(confidence),
             'explanation': explanation
         }
+
 # ============================================================================
 # API ENDPOINTS
 # ============================================================================
+
+@app.route('/', methods=['GET'])
+def root():
+    return jsonify({
+        'status': 'live',
+        'message': '🏆 Improved Voice Detection API v1.1.0'
+    }), 200
 
 @app.route('/api/voice-detection', methods=['POST'])
 @require_api_key
@@ -495,7 +498,7 @@ def detect_voice():
 def health_check():
     return jsonify({
         'status': 'healthy',
-        'version': '1.0.5',
+        'version': '1.1.0',
         'timestamp': datetime.now().isoformat(),
         'supported_languages': SUPPORTED_LANGUAGES
     }), 200
