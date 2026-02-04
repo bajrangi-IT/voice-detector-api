@@ -128,8 +128,10 @@ class ImprovedVoiceAnalyzer:
         sr_feat = librosa.feature.spectral_rolloff(y=self.audio, sr=self.sr)[0]
         sc_feat = librosa.feature.spectral_contrast(y=self.audio, sr=self.sr)
         
-        flux = np.sqrt(np.sum(np.diff(S_db, axis=1)**2, axis=0))
-        entropy = -np.sum(np.mean(S_db, axis=1) * np.log(np.mean(S_db, axis=1) + 1e-10))
+        # Fix: Use linear power for entropy to avoid 'nan' results
+        S_norm = np.clip(np.mean(S, axis=1), 1e-10, None)
+        S_norm = S_norm / np.sum(S_norm)
+        entropy = -np.sum(S_norm * np.log2(S_norm + 1e-10))
         
         return {
             'spectral_centroid_mean': float(np.mean(sc)),
@@ -305,154 +307,83 @@ class ImprovedClassifier:
     @staticmethod
     def classify(features):
         """
-        Enhanced classification with better AI detection
+        State-of-the-Art AI Detection
+        Focuses on 'Unnatural Perfection' (chaos analysis)
         """
         ai_score = 0.0
         human_score = 0.0
         
-        # ===== SIGNAL 1: Pitch Consistency (Weight: 5.0) - PRIMARY =====
-        # AI voices have UNNATURALLY HIGH consistency
+        # 1. Pitch Chaos Analysis (Weight: 6.0)
+        # Humans have micro-fluctuations; AI is often too smooth or too consistent
         pc = features.get('pitch_consistency', 0.5)
-        if pc > 0.90:  # LOWERED from 0.92
-            ai_score += 5.0
-        elif pc > 0.85:  # NEW: Intermediate level
-            ai_score += 3.5
-        elif pc > 0.75:
-            ai_score += 1.5
-        else:
-            human_score += 3.0
-        
-        # ===== SIGNAL 2: MFCC Variance (Weight: 4.5) - SECONDARY =====
-        # AI voices repeat patterns - low variance
-        mv = features.get('mfcc_variance', 0.5)
-        if mv < 0.35:  # LOWERED from 0.40
-            ai_score += 4.5
-        elif mv < 0.42:  # NEW: More granular
-            ai_score += 3.0
-        elif mv < 0.55:
-            ai_score += 1.5
-        else:
-            human_score += 3.0
-        
-        # ===== SIGNAL 3: Onset Regularity (Weight: 4.5) =====
-        # AI voices have too-regular timing
-        onset_reg = features.get('onset_regularity', 0.5)
-        if onset_reg > 0.85:  # LOWERED from 0.87
-            ai_score += 4.5
-        elif onset_reg > 0.78:  # NEW: Intermediate level
-            ai_score += 3.0
-        elif onset_reg > 0.70:
-            ai_score += 1.5
-        else:
-            human_score += 3.0
-        
-        # ===== SIGNAL 4: Spectral Flux (Weight: 4.0) =====
-        # AI has artificially smooth spectrum
-        sf = features.get('spectral_flux_mean', 0.2)
-        if sf < 0.13:  # LOWERED from 0.14
-            ai_score += 4.0
-        elif sf < 0.16:  # NEW: Intermediate
-            ai_score += 2.5
-        elif sf < 0.20:
-            ai_score += 1.0
-        else:
-            human_score += 2.5
-        
-        # ===== SIGNAL 5: Pitch Jitter (Weight: 3.5) =====
-        # AI lacks natural jitter
         pj = features.get('pitch_jitter', 0.03)
-        if pj < 0.008:  # LOWERED from 0.010
-            ai_score += 3.5
-        elif pj < 0.012:  # NEW
-            ai_score += 2.0
-        elif pj > 0.045:
-            human_score += 2.5
-        else:
-            human_score += 1.0
         
-        # ===== SIGNAL 6: Energy Ratio (Weight: 3.5) =====
-        # AI has uniform energy distribution
-        er = features.get('energy_ratio', 0.4)
-        if er < 0.20:  # LOWERED from 0.22
-            ai_score += 3.5
-        elif er < 0.28:  # NEW
-            ai_score += 2.0
-        elif er > 0.55:
-            human_score += 2.5
-        else:
-            human_score += 1.0
-        
-        # ===== SIGNAL 7: Spectral Entropy (Weight: 3.0) =====
-        # AI has lower entropy (less complex)
-        se = features.get('spectral_entropy', 3.0)
-        if se < 1.8:  # LOWERED from 1.9
+        if pc > 0.70: # Very stable pitch is a huge AI signal
+            ai_score += 4.5
+            if pc > 0.85: ai_score += 2.5
+        elif pc < 0.35: # Shaky pitch is very human
+            human_score += 3.5
+            
+        if pj < 0.020: # Lack of micro-jitter
+            ai_score += 4.0
+            if pj < 0.012: ai_score += 2.0
+        elif pj > 0.040: # Natural organic jitter
+            human_score += 3.0
+            
+        # 2. Timing Regularity (Weight: 5.0)
+        # AI often follows a mathematical onset pattern
+        onset_reg = features.get('onset_regularity', 0.5)
+        if onset_reg > 0.75:
+            ai_score += 5.0
+        elif onset_reg < 0.40:
+            human_score += 3.5
+            
+        # 3. Spectral Smoothness (Weight: 4.5)
+        # AI spectral transitions are often cleaner than biological vocal cords
+        sf = features.get('spectral_flux_mean', 0.2)
+        if sf < 0.18:
+            ai_score += 4.5
+        elif sf > 0.30:
+            human_score += 3.0
+            
+        # 4. Complexity & Entropy (Weight: 4.0)
+        # Biological voices are inherently more complex (entropy)
+        se = features.get('spectral_entropy', 4.0)
+        if np.isnan(se) or se < 2.5:
+            ai_score += 4.0
+        elif se > 7.0: # High complexity is very human
+            human_score += 3.5
+            
+        # 5. Harmonic Purity (Weight: 3.0)
+        # AI voices can have unnaturally high harmonic ratios
+        hr = features.get('harmonic_ratio', 0.5)
+        if hr > 0.85:
             ai_score += 3.0
-        elif se < 2.3:  # NEW
-            ai_score += 1.5
-        elif se > 4.2:
+        elif hr < 0.50:
             human_score += 2.0
-        else:
-            human_score += 0.5
-        
-        # ===== SIGNAL 8: Zero Crossing Rate (Weight: 2.5) =====
-        # AI lacks high-frequency components
-        zcr = features.get('zero_crossing_rate_mean', 0.1)
-        if zcr < 0.04:  # LOWERED from 0.045
-            ai_score += 2.5
-        elif zcr < 0.06:
-            ai_score += 1.0
-        elif zcr > 0.12:
-            human_score += 2.0
-        else:
-            human_score += 0.5
-        
-        # ===== SIGNAL 9: Formant Stability (Weight: 2.0) =====
-        # AI has too-stable formants
-        fs = features.get('formant_stability', 0.5)
-        if fs > 0.87:  # LOWERED from 0.88
-            ai_score += 2.0
-        elif fs > 0.82:
-            ai_score += 1.0
-        elif fs < 0.58:
-            human_score += 1.5
-        
-        # ===== SIGNAL 10: Spectral Contrast (Weight: 2.0) =====
-        # AI has reduced contrast
-        spec_contrast = features.get('spectral_contrast_mean', 0)
-        if spec_contrast < 5.0:
-            ai_score += 2.0
-        elif spec_contrast > 7.0:
-            human_score += 1.5
-        
-        # ===== CALCULATE CONFIDENCE =====
+            
+        # Calculate confidence
         total = ai_score + human_score
-        
         if total > 0:
             confidence = ai_score / total
         else:
             confidence = 0.5
-        
-        # Ensure valid range
+            
+        # Ensure range
         confidence = np.clip(confidence, 0.0, 1.0)
         
-        # IMPROVED: Lower threshold (0.48 instead of 0.5) for more aggressive AI detection
-        classification = 'AI_GENERATED' if confidence > 0.48 else 'HUMAN'
+        # Classification with sensitivity adjustment
+        # Use a lower threshold for AI detection (0.45) to minimize false negatives for pro AI
+        classification = 'AI_GENERATED' if confidence > 0.45 else 'HUMAN'
         
-        # Better explanation
-        if confidence > 0.65:
-            explanation = "Strong AI voice characteristics: artificial pitch patterns and spectral smoothness detected"
-        elif confidence > 0.50:
-            explanation = "AI voice characteristics detected: unnaturally consistent pitch and regular timing patterns"
-        elif confidence > 0.48:
-            explanation = "Likely AI-generated voice with artificial voice characteristics"
-        elif confidence < 0.35:
-            explanation = "Strong human speech characteristics with natural variation and complexity"
+        if classification == 'AI_GENERATED':
+            explanation = "Synthetic signature detected: unnatural vocal stability and absence of organic micro-vibrations."
         else:
-            explanation = "Natural human voice detected with typical speech dynamics and variation"
-        
+            explanation = "Natural signature detected: presence of organic voice chaos and realistic speech variation."
+            
         return {
             'classification': classification,
-            'confidence': confidence,
+            'confidence': float(confidence),
             'explanation': explanation
         }
 
