@@ -489,6 +489,7 @@ def detect_voice():
 def health_check():
     return jsonify({
         'status': 'healthy',
+        'version': '1.0.5',
         'timestamp': datetime.now().isoformat(),
         'supported_languages': SUPPORTED_LANGUAGES
     }), 200
