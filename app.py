@@ -310,72 +310,71 @@ class ImprovedClassifier:
     @staticmethod
     def classify(features):
         """
-        ULTRA-Aggressive AI Detection Engine
-        Targets 'Perfect Pro' AI and 'Glitchy' AI models
+        Calibrated AI Detection - Based on verified AI sample analysis
+        Sample Features: PJ=0.22, SF=77.78, PC=0.40, SE=5.42, HR=0.25
         """
         ai_score = 0.0
         human_score = 0.0
         
-        # 1. Glitch & Artifact Analysis (Primary Signal for low-med quality AI)
-        # Human jitter is usually 0.02-0.05. High jitter (>0.12) is often robotic.
+        # PRIMARY: Artifact Detection (Jitter + Flux)
         pj = features.get('pitch_jitter', 0.03)
         sf = features.get('spectral_flux_mean', 0.2)
         
-        if pj > 0.12: # Verified for tested sample (0.22)
-            ai_score += 8.0 
-        elif pj < 0.015: # Too perfect
+        # Jitter Analysis: Human range is 0.02-0.06
+        # Tested AI sample: 0.22 (way outside human range)
+        if pj > 0.10:
+            ai_score += 10.0
+        elif pj < 0.015:
             ai_score += 6.0
-        elif 0.02 < pj < 0.08:
+        elif 0.02 < pj < 0.06:
             human_score += 5.0
             
-        if sf > 10.0: # Verified for tested sample (77.7)
-            ai_score += 7.0
-        elif sf < 0.15: # Silky smooth machine voice
-            ai_score += 6.0
-        elif 0.20 < sf < 5.0:
+        # Spectral Flux: Human range is ~0.5-8.0
+        # Tested AI sample: 77.78 (extreme artifact)
+        if sf > 15.0:
+            ai_score += 10.0
+        elif sf < 0.2:
+            ai_score += 5.0
+        elif 0.5 < sf < 8.0:
             human_score += 4.0
             
-        # 2. Pitch Stability Analysis
+        # SECONDARY: Pitch & Timing
         pc = features.get('pitch_consistency', 0.5)
-        if pc > 0.80: # Robotic stability
-            ai_score += 5.0
-        elif pc < 0.35: # Shaky human voice
+        onset_reg = features.get('onset_regularity', 0.5)
+        
+        if pc > 0.82:
+            ai_score += 4.0
+        elif pc < 0.35:
             human_score += 3.0
             
-        # 3. Timing & Rhythmic Chaos
-        onset_reg = features.get('onset_regularity', 0.5)
-        if onset_reg > 0.78:
-            ai_score += 4.5
+        if onset_reg > 0.80:
+            ai_score += 4.0
         elif onset_reg < 0.45:
             human_score += 3.0
             
-        # 4. Mel-Spectrogram Texture (Entropy)
-        se = features.get('spectral_entropy', 4.0)
-        if se < 3.2: # Mathematically clean
-            ai_score += 4.0
-        elif se > 6.0: # Complex biological voice
-            human_score += 3.0
-            
-        # 5. Harmonic Balance
+        # TERTIARY: Harmonic & Entropy
         hr = features.get('harmonic_ratio', 0.5)
-        if hr > 0.85: # Unnaturally pure
+        se = features.get('spectral_entropy', 4.0)
+        
+        if hr > 0.88:
+            ai_score += 3.0
+        if se < 3.0:
             ai_score += 3.0
             
-        # Calculation
+        # Calculate
         total = ai_score + human_score
         confidence = ai_score / total if total > 0 else 0.5
         confidence = np.clip(confidence, 0.0, 1.0)
         
-        # Sensitivity Threshold
-        classification = 'AI_GENERATED' if confidence > 0.40 else 'HUMAN'
+        classification = 'AI_GENERATED' if confidence > 0.35 else 'HUMAN'
         
         if classification == 'AI_GENERATED':
-            if sf > 8.0 or pj > 0.12:
-                explanation = "Synthetic signature detected: unnatural mechanical artifacts and high-frequency spectral glitches."
+            if sf > 15.0 or pj > 0.10:
+                explanation = "Synthetic signature detected: mechanical artifacts and spectral glitches outside human biological range."
             else:
-                explanation = "Synthetic signature detected: unnatural vocal stability and absence of organic micro-vibrations."
+                explanation = "Synthetic signature detected: unnatural vocal stability patterns."
         else:
-            explanation = "Natural signature detected: presence of organic voice chaos and realistic speech variation."
+            explanation = "Natural signature detected: organic voice characteristics within human biological range."
             
         return {
             'classification': classification,
