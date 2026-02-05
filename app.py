@@ -1,284 +1,306 @@
 #!/usr/bin/env python3
 """
-Voice Detection API - Detects AI-generated vs Human voices
-Supports: Tamil, English, Hindi, Malayalam, Telugu
-Author: Voice Detection Team
+Robust Voice Detection REST API
+
+- Accepts POST /api/voice-detection with either:
+  - JSON: { language, audioFormat (or format), audioBase64 (or audio_base64 or audio) }
+  - multipart/form-data: file field (file or audioFile) and optional language/format fields
+- Accepts GET/HEAD for simple sanity check and OPTIONS for CORS preflight.
+- Validates API key via header x-api-key or Authorization: Bearer <key>.
+- Tolerant base64 decoder (handles data: URIs, whitespace, urlsafe variants).
+- Attempts to load audio using soundfile (recommended) or librosa (if available).
+- Defensive error handling: never raises an uncaught exception; always returns JSON.
+- Configure API key(s) via API_KEYS dict or environment variable API_KEY.
 """
 
 import os
 import re
-import gc
 import io
+import gc
 import base64
 import binascii
 import logging
+import tempfile
 from datetime import datetime
+from typing import Tuple, Optional
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Try to import librosa with error handling (non-fatal)
+# Optional backends
 try:
-    import librosa
+    import soundfile as sf  # preferred for reading bytes
+    SOUND_FILE_AVAILABLE = True
+except Exception:
+    sf = None
+    SOUND_FILE_AVAILABLE = False
+
+try:
+    import librosa  # fallback
     LIBROSA_AVAILABLE = True
     LIBROSA_ERROR = None
 except Exception as e:
-    logger.critical(f"Failed to import librosa: {e}")
+    librosa = None
     LIBROSA_AVAILABLE = False
     LIBROSA_ERROR = str(e)
 
 import numpy as np
 
-# Initialize Flask app
-app = Flask(__name__)
+# App & logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("voice-detector")
 
-# Be tolerant with trailing slashes to avoid 405s from slash variations
+app = Flask(__name__)
+# Limit request payload to avoid memory blowups (adjust as needed)
+app.config["MAX_CONTENT_LENGTH"] = 60 * 1024 * 1024  # 60 MB
+# Tolerate trailing slash variations
 app.url_map.strict_slashes = False
 
-# Enable CORS for API routes and allow common headers/methods used by clients
+# CORS for endpoints used by testers
 CORS(
     app,
     resources={r"/api/*": {"origins": "*"}},
-    supports_credentials=True,
+    supports_credentials=False,
     allow_headers=["Content-Type", "x-api-key", "Authorization"],
     methods=["GET", "POST", "OPTIONS", "HEAD"]
 )
 
-# Configuration: static keys for quick testing; prefer env var in production
+# API keys: for convenience put test keys here but use env var in production
 API_KEYS = {
-    'sk_test_123456789': 'test_user',
-    'sk_prod_87654321': 'prod_user'
+    "sk_test_123456789": "test_user",
+    "sk_prod_87654321": "prod_user",
 }
-# Optionally add single API key from environment for convenience
-ENV_API_KEY = os.environ.get("API_KEY")
-if ENV_API_KEY:
-    API_KEYS.setdefault(ENV_API_KEY, "env_user")
+ENV_KEY = os.environ.get("API_KEY")
+if ENV_KEY:
+    API_KEYS.setdefault(ENV_KEY, "env_user")
 
-LANGUAGES = ['Tamil', 'English', 'Hindi', 'Malayalam', 'Telugu']
+LANGUAGES = {"Tamil", "English", "Hindi", "Malayalam", "Telugu"}
 
-# Track requests for simple stats
+# Lightweight in-memory stats (not persistent)
 request_history = []
 
-
-def check_api_key_value(key):
-    """Return True if key is valid (case-sensitive string match)."""
-    return key in API_KEYS
+# Helpers ---------------------------------------------------------------------
 
 
-def extract_api_key_from_headers():
-    """Look for x-api-key or Authorization: Bearer ... (case-insensitive)."""
-    header_key = request.headers.get("x-api-key") or request.headers.get("X-API-KEY")
-    if header_key:
-        return header_key
+def extract_api_key_from_headers() -> Optional[str]:
+    """Look for x-api-key or Authorization: Bearer <key>."""
+    key = request.headers.get("x-api-key") or request.headers.get("X-API-KEY")
+    if key:
+        return key.strip()
     auth = request.headers.get("Authorization") or request.headers.get("authorization")
     if auth and auth.lower().startswith("bearer "):
         return auth.split(" ", 1)[1].strip()
     return None
 
 
-def validate_request(data):
-    """Validate incoming request and accept common key variants."""
-    if not data:
-        return False, "No JSON data provided"
-
-    language = (data.get('language') or data.get('Language') or '').strip().title()
-    audio_format = (data.get('audioFormat') or data.get('format') or data.get('audioFormat') or '').lower().lstrip('.')
-    audio_base64 = data.get('audioBase64') or data.get('audio_base64') or data.get('audio')
-
-    if not language:
-        return False, "Missing language"
-    if language not in LANGUAGES:
-        return False, f"Language '{language}' not supported"
-
-    if not audio_format:
-        return False, "Missing audio format"
-    if audio_format != 'mp3':
-        return False, "Only MP3 format is supported"
-
-    if not audio_base64:
-        return False, "No audio data provided"
-
-    # Log length/prefix for debugging (do not log entire audio)
-    try:
-        logger.info("Received audioBase64 length=%d prefix=%s", len(audio_base64), (audio_base64[:40] + '...') if len(audio_base64) > 40 else audio_base64)
-    except Exception:
-        logger.info("Received audioBase64 (length unknown)")
-
-    return True, (language, audio_format, audio_base64)
+def check_api_key(key: Optional[str]) -> bool:
+    if not key:
+        return False
+    return key in API_KEYS
 
 
-def decode_audio(audio_base64):
-    """Decode base64 audio to bytes (tolerant).
-
-    Handles data:audio/*;base64, whitespace, urlsafe base64, and returns clear errors.
+def tolerant_base64_to_bytes(s: object) -> Tuple[Optional[bytes], Optional[str]]:
+    """
+    Robust base64 -> bytes conversion.
     Returns (bytes, None) on success or (None, error_message) on failure.
+    Accepts str or bytes. Removes data: URI prefix, whitespace, non-base64 chars,
+    handles urlsafe variants and padding.
     """
     try:
-        if not isinstance(audio_base64, str) or not audio_base64:
-            return None, "Audio payload is empty or not a string"
+        if s is None:
+            return None, "Audio payload is missing"
+        if isinstance(s, (bytes, bytearray)):
+            try:
+                s = s.decode("utf-8", errors="ignore")
+            except Exception:
+                s = str(s)
 
-        # Strip common data URI prefix: data:audio/mp3;base64,AAAA...
-        prefix_match = re.match(r'^\s*data:audio\/[a-z0-9.+-]+;base64,', audio_base64, flags=re.I)
-        if prefix_match:
-            audio_base64 = audio_base64[prefix_match.end():]
+        if not isinstance(s, str):
+            return None, "Audio payload must be a base64 string"
 
-        # Remove whitespace/newlines
-        audio_base64 = ''.join(audio_base64.split())
+        s = s.strip()
+        if not s:
+            return None, "Audio payload is empty"
 
-        # Sanity check length
-        if len(audio_base64) < 16:
+        # strip data URI prefix if present
+        m = re.match(r"^\s*data:audio\/[a-z0-9.+-]+;base64,", s, flags=re.I)
+        if m:
+            s = s[m.end():]
+
+        # remove whitespace/newlines
+        s = "".join(s.split())
+
+        # remove any chars not in base64/url-safe/padding set
+        cleaned = re.sub(r"[^A-Za-z0-9+/=_\-]", "", s)
+        removed = len(s) - len(cleaned)
+        if removed > 0:
+            logger.info("tolerant_base64_to_bytes: removed %d invalid chars from input", removed)
+
+        if len(cleaned) < 16:
             return None, "Audio data too short or truncated"
 
-        # Try strict/base64 decode (validate=True raises on non-base64 chars)
+        # normalize urlsafe to standard
+        cleaned = cleaned.replace("-", "+").replace("_", "/")
+
+        # pad to multiple of 4
+        pad_len = (-len(cleaned)) % 4
+        if pad_len:
+            cleaned += "=" * pad_len
+
+        # try strict decode first
         try:
-            audio_bytes = base64.b64decode(audio_base64, validate=True)
-            if not audio_bytes:
+            b = base64.b64decode(cleaned, validate=True)
+            if not b:
                 return None, "Decoded audio is empty"
-            return audio_bytes, None
+            return b, None
         except (binascii.Error, ValueError):
-            # Try urlsafe variant (some clients use - and _)
+            # fallback tolerant decode
             try:
-                padding = '=' * (-len(audio_base64) % 4)
-                audio_bytes = base64.urlsafe_b64decode(audio_base64 + padding)
-                if not audio_bytes:
-                    return None, "Decoded audio is empty after urlsafe decode"
-                return audio_bytes, None
+                b = base64.b64decode(cleaned)
+                if not b:
+                    return None, "Decoded audio empty after fallback decode"
+                return b, None
             except Exception as e:
-                return None, f"Base64 decode failed: {str(e)}"
+                logger.debug("base64 fallback decode exception: %s", str(e))
+                return None, f"Failed to decode audio: {str(e)}"
 
-    except Exception as e:
-        logger.exception("Unexpected error in decode_audio")
-        return None, f"Exception while decoding audio: {e}"
-
-
-def load_audio(audio_bytes):
-    """Load audio with librosa (if available). Returns audio ndarray and sample rate."""
-    if not LIBROSA_AVAILABLE:
-        return None, None, f"Librosa not available: {LIBROSA_ERROR}"
-
-    try:
-        audio_file = io.BytesIO(audio_bytes)
-        # librosa can accept a file-like object
-        audio, sr = librosa.load(audio_file, sr=22050, duration=30)
-
-        if len(audio) < sr * 0.3:  # Less than 0.3 seconds
-            return None, None, "Audio too short"
-
-        return audio, sr, None
-    except Exception as e:
-        logger.error(f"Audio loading error: {e}")
-        return None, None, "Failed to load audio"
+    except Exception as exc:
+        logger.exception("Unexpected in tolerant_base64_to_bytes")
+        return None, f"Exception while decoding audio: {exc}"
 
 
-# Feature extraction and classifier classes (kept from your implementation)
+def load_audio_from_bytes(audio_bytes: bytes) -> Tuple[Optional[np.ndarray], Optional[int], Optional[str]]:
+    """
+    Try to read raw audio bytes into waveform (numpy array) and sample rate.
+    Preferred: soundfile (sf), fallback to librosa. Returns (audio, sr, None) or (None, None, error)
+    """
+    if audio_bytes is None:
+        return None, None, "No audio bytes provided"
+
+    # Try soundfile (reads many container types)
+    if SOUND_FILE_AVAILABLE:
+        try:
+            bio = io.BytesIO(audio_bytes)
+            data, sr = sf.read(bio, dtype="float32")
+            # sf.read may return shape (nsamples,) or (nsamples, channels)
+            if data is None or len(data) == 0:
+                return None, None, "Could not read audio (soundfile empty)"
+            # If stereo, convert to mono by averaging channels
+            if data.ndim > 1:
+                data = np.mean(data, axis=1)
+            return data.astype(np.float32), int(sr), None
+        except Exception as e:
+            logger.warning("soundfile read failed: %s", str(e))
+            # continue to next fallback
+
+    # Fallback: librosa
+    if LIBROSA_AVAILABLE:
+        try:
+            bio = io.BytesIO(audio_bytes)
+            # librosa.load accepts file-like objects if soundfile is installed; if not, try sr only
+            audio, sr = librosa.load(bio, sr=22050, duration=30)
+            if audio is None or len(audio) == 0:
+                return None, None, "Could not load audio (librosa empty)"
+            return audio.astype(np.float32), int(sr), None
+        except Exception as e:
+            logger.warning("librosa load failed: %s", str(e))
+            return None, None, f"Audio decoding failed: {str(e)}"
+
+    return None, None, "No audio backend available (install soundfile or librosa)"
+
+
+# Feature extraction & classification (kept defensive) ------------------------
+
+
 class FeatureExtractor:
-    """Extract acoustic features from audio"""
-    def __init__(self, audio, sr):
+    def __init__(self, audio: np.ndarray, sr: int):
         self.audio = audio
         self.sr = sr
-        self.features = {}
 
     def normalize(self):
-        max_val = np.max(np.abs(self.audio))
-        if max_val > 1e-6:
-            self.audio = self.audio / max_val
+        try:
+            max_val = np.max(np.abs(self.audio))
+            if max_val > 1e-6:
+                self.audio = self.audio / max_val
+        except Exception:
+            pass
 
     def extract_pitch_features(self):
         if not LIBROSA_AVAILABLE:
-            return {'pitch_consistency': 0.0, 'pitch_jitter': 0.0}
-
+            return {"pitch_consistency": 0.0, "pitch_jitter": 0.0}
         try:
             f0 = librosa.yin(self.audio, fmin=50, fmax=500, trough_threshold=0.1)
             f0_valid = f0[f0 > 0]
-
             if len(f0_valid) < 5:
-                return {'pitch_consistency': 0.0, 'pitch_jitter': 0.0}
-
+                return {"pitch_consistency": 0.0, "pitch_jitter": 0.0}
             f0_norm = f0_valid / np.mean(f0_valid)
             pitch_consistency = 1.0 - np.std(f0_norm)
-            pitch_consistency = np.clip(pitch_consistency, 0, 1)
-
-            pitch_jitter = np.mean(np.abs(np.diff(f0_valid))) / np.mean(f0_valid)
-
-            return {'pitch_consistency': float(pitch_consistency), 'pitch_jitter': float(pitch_jitter)}
+            pitch_consistency = float(np.clip(pitch_consistency, 0, 1))
+            pitch_jitter = float(np.mean(np.abs(np.diff(f0_valid))) / np.mean(f0_valid))
+            return {"pitch_consistency": pitch_consistency, "pitch_jitter": pitch_jitter}
         except Exception as e:
-            logger.warning(f"Pitch extraction failed: {e}")
-            return {'pitch_consistency': 0.0, 'pitch_jitter': 0.0}
+            logger.debug("pitch extraction failed: %s", str(e))
+            return {"pitch_consistency": 0.0, "pitch_jitter": 0.0}
 
     def extract_spectral_features(self):
         if not LIBROSA_AVAILABLE:
-            return {'spectral_centroid': 0.0, 'spectral_flux': 0.0, 'spectral_contrast': 0.0}
-
+            return {"spectral_centroid": 0.0, "spectral_flux": 0.0, "spectral_contrast": 0.0}
         try:
             S = librosa.feature.melspectrogram(y=self.audio, sr=self.sr, n_mels=128)
             S_db = librosa.power_to_db(S, ref=np.max)
             centroid = librosa.feature.spectral_centroid(y=self.audio, sr=self.sr)[0]
             contrast = librosa.feature.spectral_contrast(y=self.audio, sr=self.sr)
-            flux = np.sqrt(np.sum(np.diff(S_db, axis=1)**2, axis=0))
-
+            flux = np.sqrt(np.sum(np.diff(S_db, axis=1) ** 2, axis=0))
             return {
-                'spectral_centroid': float(np.mean(centroid)),
-                'spectral_flux': float(np.mean(flux)),
-                'spectral_contrast': float(np.mean(contrast))
+                "spectral_centroid": float(np.mean(centroid)),
+                "spectral_flux": float(np.mean(flux)),
+                "spectral_contrast": float(np.mean(contrast)),
             }
         except Exception as e:
-            logger.warning(f"Spectral extraction failed: {e}")
-            return {'spectral_centroid': 0.0, 'spectral_flux': 0.0, 'spectral_contrast': 0.0}
+            logger.debug("spectral extraction failed: %s", str(e))
+            return {"spectral_centroid": 0.0, "spectral_flux": 0.0, "spectral_contrast": 0.0}
 
     def extract_mfcc_features(self):
         if not LIBROSA_AVAILABLE:
-            return {'mfcc_variance': 0.0}
-
+            return {"mfcc_variance": 0.0}
         try:
             mfcc = librosa.feature.mfcc(y=self.audio, sr=self.sr, n_mfcc=13)
             mfcc_variance = float(np.mean(np.var(mfcc, axis=1)))
-            return {'mfcc_variance': mfcc_variance}
+            return {"mfcc_variance": mfcc_variance}
         except Exception as e:
-            logger.warning(f"MFCC extraction failed: {e}")
-            return {'mfcc_variance': 0.0}
+            logger.debug("mfcc extraction failed: %s", str(e))
+            return {"mfcc_variance": 0.0}
 
     def extract_temporal_features(self):
         if not LIBROSA_AVAILABLE:
-            return {'onset_regularity': 0.0, 'zero_crossing_rate': 0.0}
-
+            return {"onset_regularity": 0.0, "zero_crossing_rate": 0.0}
         try:
             onset_env = librosa.onset.onset_strength(y=self.audio, sr=self.sr)
-            onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env, units='frames')
+            onset_frames = librosa.onset.onset_detect(onset_envelope=onset_env, units="frames")
             frame_times = librosa.frames_to_time(onset_frames, sr=self.sr)
             intervals = np.diff(frame_times) if len(frame_times) > 1 else np.array([0.1])
-
             if len(intervals) > 0 and np.mean(intervals) > 0:
                 regularity = 1 - np.clip(np.std(intervals) / np.mean(intervals), 0, 1)
             else:
                 regularity = 0.0
-
-            zcr = np.mean(librosa.feature.zero_crossing_rate(self.audio))
-
-            return {'onset_regularity': float(regularity), 'zero_crossing_rate': float(zcr)}
+            zcr = float(np.mean(librosa.feature.zero_crossing_rate(self.audio)))
+            return {"onset_regularity": float(regularity), "zero_crossing_rate": zcr}
         except Exception as e:
-            logger.warning(f"Temporal extraction failed: {e}")
-            return {'onset_regularity': 0.0, 'zero_crossing_rate': 0.0}
+            logger.debug("temporal extraction failed: %s", str(e))
+            return {"onset_regularity": 0.0, "zero_crossing_rate": 0.0}
 
     def extract_energy_features(self):
         if not LIBROSA_AVAILABLE:
-            return {'energy_ratio': 0.0}
-
+            return {"energy_ratio": 0.0}
         try:
             stft = np.abs(librosa.stft(self.audio))
             power = np.abs(stft) ** 2
             energy = np.sum(power, axis=0)
             energy_ratio = np.std(energy) / (np.mean(energy) + 1e-6)
-            return {'energy_ratio': float(energy_ratio)}
+            return {"energy_ratio": float(energy_ratio)}
         except Exception as e:
-            logger.warning(f"Energy extraction failed: {e}")
-            return {'energy_ratio': 0.0}
+            logger.debug("energy extraction failed: %s", str(e))
+            return {"energy_ratio": 0.0}
 
     def extract_all(self):
         self.normalize()
@@ -292,261 +314,312 @@ class FeatureExtractor:
 
 
 class VoiceClassifier:
-    """Classify voice as AI or Human"""
-    def __init__(self, features):
+    def __init__(self, features: dict):
         self.features = features
 
-    def score_ai_likelihood(self):
+    def score_ai_likelihood(self) -> float:
         score = 0.0
-
-        pitch_cons = self.features.get('pitch_consistency', 0.5)
+        pitch_cons = self.features.get("pitch_consistency", 0.5)
         if pitch_cons > 0.88:
             score += 4.5
         elif pitch_cons < 0.65:
             score -= 2.0
-
-        jitter = self.features.get('pitch_jitter', 0.03)
+        jitter = self.features.get("pitch_jitter", 0.03)
         if jitter > 0.038:
             score += 5.5
         elif jitter < 0.008:
             score += 3.5
-
-        flux = self.features.get('spectral_flux', 0.15)
+        flux = self.features.get("spectral_flux", 0.15)
         if flux > 0.18:
             score += 5.5
         elif flux < 0.12:
             score += 3.0
-
-        mfcc_var = self.features.get('mfcc_variance', 0.5)
+        mfcc_var = self.features.get("mfcc_variance", 0.5)
         if mfcc_var < 0.38:
             score += 4.0
         elif mfcc_var > 0.60:
             score -= 2.5
-
-        onset_reg = self.features.get('onset_regularity', 0.5)
+        onset_reg = self.features.get("onset_regularity", 0.5)
         if onset_reg > 0.82:
             score += 4.0
         elif onset_reg < 0.65:
             score -= 2.5
-
-        energy = self.features.get('energy_ratio', 0.4)
+        energy = self.features.get("energy_ratio", 0.4)
         if energy < 0.25:
             score += 3.0
-
-        zcr = self.features.get('zero_crossing_rate', 0.1)
+        zcr = self.features.get("zero_crossing_rate", 0.1)
         if zcr > 0.13:
             score += 2.5
+        return float(score)
 
-        return score
-
-    def classify(self):
+    def classify(self) -> dict:
         ai_score = self.score_ai_likelihood()
-        confidence = 1.0 / (1.0 + np.exp(-ai_score / 3.0))
-        confidence = np.clip(confidence, 0.01, 0.99)
-        classification = 'AI_GENERATED' if confidence >= 0.50 else 'HUMAN'
+        try:
+            confidence = 1.0 / (1.0 + np.exp(-ai_score / 3.0))
+        except Exception:
+            confidence = 0.5
+        confidence = float(np.clip(confidence, 0.01, 0.99))
+        classification = "AI_GENERATED" if confidence >= 0.50 else "HUMAN"
         explanation = self.get_explanation(confidence)
-        return {'classification': classification, 'confidence': confidence, 'explanation': explanation}
+        return {"classification": classification, "confidence": confidence, "explanation": explanation}
 
-    def get_explanation(self, confidence):
+    def get_explanation(self, confidence: float) -> str:
         if confidence > 0.88:
             return "Unnatural pitch consistency and robotic speech patterns detected"
-        elif confidence > 0.70:
+        if confidence > 0.70:
             return "AI voice characteristics detected: artificial voice signatures and spectral artifacts"
-        elif confidence > 0.50:
+        if confidence > 0.50:
             return "Likely AI-generated voice with subtle artificial characteristics"
-        elif confidence < 0.30:
+        if confidence < 0.30:
             return "Natural human speech with high complexity and organic variation"
-        else:
-            return "Voice appears human with typical natural speech dynamics"
+        return "Voice appears human with typical natural speech dynamics"
 
 
-# Logging helper: show incoming request info to help debug intermittent 405/400
+# Routes ---------------------------------------------------------------------
+
+
 @app.before_request
-def log_request_info():
+def log_request():
+    # Keep concise logs; avoid logging raw audio content
     try:
-        logger.info("Incoming request: %s %s", request.method, request.path)
-        logger.debug("Headers: %s", dict(request.headers))
+        logger.info("Incoming %s %s (Content-Length=%s)", request.method, request.path, request.headers.get("Content-Length"))
     except Exception:
         pass
 
 
-@app.route('/', methods=['GET'])
+@app.route("/", methods=["GET"])
 def index():
-    """Root route for verification"""
-    return jsonify({
-        'status': 'online',
-        'message': 'Voice Detection API is running',
-        'librosa_available': LIBROSA_AVAILABLE,
-        'endpoints': {
-            'detection': '/api/voice-detection',
-            'health': '/api/health',
-            'stats': '/api/stats'
+    return jsonify(
+        {
+            "status": "online",
+            "message": "Voice Detection API running",
+            "librosa_available": LIBROSA_AVAILABLE,
+            "soundfile_available": SOUND_FILE_AVAILABLE,
+            "endpoints": {"detection": "/api/voice-detection", "health": "/api/health", "stats": "/api/stats"},
         }
-    }), 200
+    ), 200
 
 
-# Accept common verbs plus OPTIONS to prevent 405s from preflight or simple GET checks
-@app.route('/api/voice-detection', methods=['GET', 'POST', 'OPTIONS', 'HEAD'])
-@app.route('/api/voice-detection/', methods=['GET', 'POST', 'OPTIONS', 'HEAD'])
+@app.route("/api/voice-detection", methods=["GET", "POST", "OPTIONS", "HEAD"])
+@app.route("/api/voice-detection/", methods=["GET", "POST", "OPTIONS", "HEAD"])
 def detect_voice():
-    """Main endpoint for voice detection"""
-    # Respond to preflight quickly
-    if request.method == 'OPTIONS':
-        return ('', 204)
+    # Handle preflight
+    if request.method == "OPTIONS":
+        return ("", 204)
 
-    # Allow a friendly GET/HEAD response for debugging clients
-    if request.method in ('GET', 'HEAD'):
-        return jsonify({
-            'status': 'ok',
-            'message': 'Send POST with JSON: {language, audioFormat, audioBase64} and header x-api-key'
-        }), 200
+    if request.method in ("GET", "HEAD"):
+        return (
+            jsonify(
+                {
+                    "status": "ok",
+                    "message": "Send POST with JSON: {language, audioFormat, audioBase64} (or multipart file 'file') and header x-api-key",
+                }
+            ),
+            200,
+        )
 
-    # Extract API key and validate
-    api_key = extract_api_key_from_headers()
-    if not api_key or not check_api_key_value(api_key):
-        logger.warning(f"Invalid API key attempt: {api_key}")
-        return jsonify({'status': 'error', 'message': 'Invalid API key or malformed request'}), 401
-
-    # Parse JSON safely
-    data = request.get_json(silent=True)
-    is_valid, result = validate_request(data)
-    if not is_valid:
-        logger.warning(f"Invalid request: {result}")
-        return jsonify({'status': 'error', 'message': result}), 400
-
-    language, audio_format, audio_base64 = result
-
-    # Decode audio
-    audio_bytes, decode_error = decode_audio(audio_base64)
-
-    # Aggressive memory cleanup for large base64 blobs
+    # Protect entire handler with try/except to never leak stack traces
     try:
-        del audio_base64, data, result
-    except Exception:
-        pass
-    gc.collect()
+        # API key check
+        api_key = extract_api_key_from_headers()
+        if not check_api_key(api_key):
+            logger.warning("Unauthorized request, missing/invalid API key")
+            return jsonify({"status": "error", "message": "Invalid API key"}), 401
 
-    if decode_error:
-        logger.warning(f"Decode error: {decode_error}")
-        return jsonify({'status': 'error', 'message': decode_error}), 400
+        # Determine input method: JSON base64 or multipart file
+        content_type = request.content_type or ""
+        language = None
+        audio_format = None
+        audio_bytes = None
 
-    # Load audio into waveform
-    audio, sr, load_error = load_audio(audio_bytes)
+        # JSON body
+        if "application/json" in content_type or request.is_json:
+            data = request.get_json(silent=True)
+            if not data:
+                return jsonify({"status": "error", "message": "Invalid or empty JSON body"}), 400
+            # accept multiple key variants
+            language = (data.get("language") or data.get("Language") or "").strip().title()
+            audio_format = (data.get("audioFormat") or data.get("format") or data.get("audioFormat") or "").lower().lstrip(".")
+            audio_field = data.get("audioBase64") or data.get("audio_base64") or data.get("audio")
+            if not audio_field:
+                return jsonify({"status": "error", "message": "Missing audioBase64 field in JSON"}), 400
+            audio_bytes, err = tolerant_base64_to_bytes(audio_field)
+            if err:
+                return jsonify({"status": "error", "message": err}), 400
 
-    # Free raw bytes
-    try:
-        del audio_bytes
-    except Exception:
-        pass
-    gc.collect()
+        # multipart/form-data file upload
+        elif "multipart/form-data" in content_type:
+            # file under 'file' or 'audioFile'
+            f = request.files.get("file") or request.files.get("audioFile") or request.files.get("audio")
+            if not f:
+                return jsonify({"status": "error", "message": "Missing file in multipart/form-data"}), 400
+            try:
+                audio_bytes = f.read()
+            except Exception:
+                # fallback saving to temp file
+                try:
+                    tmp = tempfile.NamedTemporaryFile(delete=False)
+                    f.save(tmp.name)
+                    tmp.close()
+                    with open(tmp.name, "rb") as rf:
+                        audio_bytes = rf.read()
+                except Exception as e:
+                    logger.exception("Failed reading uploaded file")
+                    return jsonify({"status": "error", "message": "Failed to read uploaded file"}), 400
+                finally:
+                    try:
+                        os.unlink(tmp.name)
+                    except Exception:
+                        pass
+            language = (request.form.get("language") or request.form.get("lang") or "").strip().title()
+            audio_format = (request.form.get("format") or request.form.get("audioFormat") or "").lower().lstrip(".")
+        else:
+            # For other content types, try to parse JSON or fail
+            data = request.get_json(silent=True)
+            if data:
+                language = (data.get("language") or data.get("Language") or "").strip().title()
+                audio_format = (data.get("audioFormat") or data.get("format") or "").lower().lstrip(".")
+                audio_field = data.get("audioBase64") or data.get("audio_base64") or data.get("audio")
+                if audio_field:
+                    audio_bytes, err = tolerant_base64_to_bytes(audio_field)
+                    if err:
+                        return jsonify({"status": "error", "message": err}), 400
+            else:
+                return jsonify({"status": "error", "message": "Unsupported Content-Type; send JSON or multipart/form-data"}), 415
 
-    if load_error:
-        logger.warning(f"Load error: {load_error}")
-        return jsonify({'status': 'error', 'message': load_error}), 400
+        # Validate language & format
+        if not language:
+            return jsonify({"status": "error", "message": "Missing language"}), 400
+        if language not in LANGUAGES:
+            return jsonify({"status": "error", "message": f"Unsupported language: {language}"}), 400
 
-    # Extract features
-    try:
-        extractor = FeatureExtractor(audio, sr)
-        features = extractor.extract_all()
-        logger.info(f"Features extracted for {language}")
-        # free large objects promptly
-        del audio, extractor
+        if not audio_format:
+            # try to guess from bytes header (very simple)
+            audio_format = "mp3"  # default expectation from tester
+        if audio_format.lower().lstrip(".") != "mp3":
+            return jsonify({"status": "error", "message": "Only MP3 format supported"}), 400
+
+        if not audio_bytes:
+            return jsonify({"status": "error", "message": "No audio data available"}), 400
+
+        # Load audio waveform
+        audio, sr, load_err = load_audio_from_bytes(audio_bytes)
+        # free raw bytes ASAP
+        try:
+            del audio_bytes
+        except Exception:
+            pass
         gc.collect()
+
+        if load_err:
+            # Return the backend-friendly message
+            logger.warning("Audio load failed: %s", load_err)
+            return jsonify({"status": "error", "message": load_err}), 400
+
+        # Basic length check
+        if audio is None or sr is None or len(audio) < int(sr * 0.25):
+            return jsonify({"status": "error", "message": "Audio too short"}), 400
+
+        # Feature extraction & classification
+        try:
+            extractor = FeatureExtractor(audio, sr)
+            features = extractor.extract_all()
+            # free audio and extractor early
+            try:
+                del audio, extractor
+            except Exception:
+                pass
+            gc.collect()
+        except Exception as e:
+            logger.exception("Feature extraction error")
+            return jsonify({"status": "error", "message": "Feature extraction failed"}), 500
+
+        try:
+            classifier = VoiceClassifier(features)
+            result = classifier.classify()
+        except Exception as e:
+            logger.exception("Classification error")
+            return jsonify({"status": "error", "message": "Classification failed"}), 500
+
+        # Build response
+        response = {
+            "status": "success",
+            "language": language,
+            "classification": result.get("classification", "UNKNOWN"),
+            "confidenceScore": round(float(result.get("confidence", 0.0)), 2),
+            "explanation": result.get("explanation", ""),
+        }
+
+        # store light-weight log
+        try:
+            request_history.append({"timestamp": datetime.utcnow().isoformat(), "language": language, "classification": response["classification"]})
+        except Exception:
+            pass
+
+        return jsonify(response), 200
+
     except Exception as e:
-        logger.exception("Feature extraction error")
-        return jsonify({'status': 'error', 'message': 'Feature extraction failed'}), 500
-
-    # Classify
-    try:
-        classifier = VoiceClassifier(features)
-        result = classifier.classify()
-        logger.info(f"Classification: {result['classification']} (confidence: {result['confidence']:.2f})")
-    except Exception as e:
-        logger.exception("Classification error")
-        return jsonify({'status': 'error', 'message': 'Classification failed'}), 500
-
-    response = {
-        'status': 'success',
-        'language': language,
-        'classification': result['classification'],
-        'confidenceScore': round(result['confidence'], 2),
-        'explanation': result['explanation']
-    }
-
-    # Save simple request log
-    request_history.append({
-        'timestamp': datetime.now().isoformat(),
-        'language': language,
-        'classification': result['classification']
-    })
-
-    return jsonify(response), 200
+        logger.exception("Unexpected error in detect_voice")
+        return jsonify({"status": "error", "message": "Internal Server Error"}), 500
 
 
-@app.route('/api/health', methods=['GET'])
+@app.route("/api/health", methods=["GET"])
 def health():
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
-        'supported_languages': LANGUAGES
-    }), 200
+    return jsonify({"status": "healthy", "timestamp": datetime.utcnow().isoformat(), "supported_languages": sorted(list(LANGUAGES))}), 200
 
 
-@app.route('/api/stats', methods=['GET'])
+@app.route("/api/stats", methods=["GET"])
 def stats():
     api_key = extract_api_key_from_headers()
-    if not api_key or not check_api_key_value(api_key):
-        return jsonify({'status': 'error', 'message': 'Invalid API key or malformed request'}), 401
-
+    if not check_api_key(api_key):
+        return jsonify({"status": "error", "message": "Invalid API key"}), 401
     total = len(request_history)
-    ai_count = sum(1 for req in request_history if req['classification'] == 'AI_GENERATED')
+    ai_count = sum(1 for r in request_history if r.get("classification") == "AI_GENERATED")
     human_count = total - ai_count
-
-    return jsonify({
-        'total_requests': total,
-        'ai_generated_count': ai_count,
-        'human_count': human_count
-    }), 200
+    return jsonify({"total_requests": total, "ai_generated_count": ai_count, "human_count": human_count}), 200
 
 
-# Error handlers
+# Error handlers --------------------------------------------------------------
+
+
 @app.errorhandler(400)
-def bad_request(error):
-    logger.warning(f"400 for {request.method} {request.path} - {error}")
-    return jsonify({'status': 'error', 'message': 'Bad Request: Malformed JSON or missing data'}), 400
+def _bad_request(e):
+    logger.debug("400 error: %s %s", request.path, str(e))
+    return jsonify({"status": "error", "message": "Bad Request: check payload and fields"}), 400
 
 
 @app.errorhandler(401)
-def unauthorized(error):
-    logger.warning(f"401 for {request.method} {request.path} - {error}")
-    return jsonify({'status': 'error', 'message': 'Unauthorized: Invalid API key'}), 401
+def _unauthorized(e):
+    return jsonify({"status": "error", "message": "Unauthorized: API key invalid"}), 401
 
 
 @app.errorhandler(404)
-def not_found(error):
-    logger.warning(f"404 for {request.method} {request.path} - {error}")
-    return jsonify({'status': 'error', 'message': 'Resource not found. Use /api/voice-detection or /api/health'}), 404
+def _not_found(e):
+    return jsonify({"status": "error", "message": "Not found"}), 404
 
 
 @app.errorhandler(405)
-def method_not_allowed(error):
-    logger.warning(f"405 Method Not Allowed: {request.method} {request.path} - Headers: {dict(request.headers)}")
-    return jsonify({'status': 'error', 'message': 'Method not allowed. Use POST to /api/voice-detection'}), 405
+def _method_not_allowed(e):
+    logger.warning("405: %s %s", request.method, request.path)
+    return jsonify({"status": "error", "message": "Method not allowed"}), 405
+
+
+@app.errorhandler(413)
+def _payload_too_large(e):
+    return jsonify({"status": "error", "message": "Payload too large"}), 413
 
 
 @app.errorhandler(500)
-def server_error(error):
-    logger.error(f"Internal Server Error: {error}")
-    return jsonify({'status': 'error', 'message': 'Internal Server Error. Please check logs.'}), 500
+def _server_error(e):
+    logger.exception("500 error")
+    return jsonify({"status": "error", "message": "Internal Server Error"}), 500
 
 
-if __name__ == '__main__':
-    print("\n" + "="*80)
-    print("Voice Detection API - Starting...")
-    print("="*80)
-    print("Supported Languages: Tamil, English, Hindi, Malayalam, Telugu")
-    print("Endpoint: http://0.0.0.0:5000/api/voice-detection")
-    print("="*80 + "\n")
+# Run ------------------------------------------------------------------------
 
-    # In production, Gunicorn (Procfile) should be used. This is for local debug.
-    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)), threaded=True)
+
+if __name__ == "__main__":
+    # For local testing only. In production use gunicorn (Procfile) so PORT is set.
+    port = int(os.environ.get("PORT", 5000))
+    logger.info("Starting Voice Detection API on port %s", port)
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
