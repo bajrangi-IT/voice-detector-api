@@ -247,64 +247,52 @@ class VoiceClassifier:
         """Calculate how likely the voice is AI-generated"""
         score = 0.0
         
-        # AI voices have unnaturally consistent pitch
+        # 1. Pitch Consistency (Traditional AI: too stable)
         pitch_cons = self.features.get('pitch_consistency', 0.5)
-        if pitch_cons > 0.90:
-            score += 5.0
-        elif pitch_cons > 0.85:
-            score += 3.5
-        elif pitch_cons < 0.75:
-            score -= 3.0
-        
-        # AI voices have repetitive patterns (low MFCC variance)
-        mfcc_var = self.features.get('mfcc_variance', 0.5)
-        if mfcc_var < 0.35:
+        if pitch_cons > 0.88:
             score += 4.5
-        elif mfcc_var > 0.55:
-            score -= 3.0
-        
-        # AI voices have too regular timing
-        onset_reg = self.features.get('onset_regularity', 0.5)
-        if onset_reg > 0.85:
-            score += 4.5
-        elif onset_reg < 0.70:
-            score -= 3.0
-        
-        # AI voices have smooth spectrum
-        flux = self.features.get('spectral_flux', 0.2)
-        if flux < 0.13:
-            score += 4.0
-        elif flux > 0.20:
-            score -= 2.5
-        
-        # AI voices lack natural jitter
-        jitter = self.features.get('pitch_jitter', 0.03)
-        if jitter < 0.008:
-            score += 3.5
-        elif jitter > 0.045:
-            score -= 2.5
-        
-        # AI voices have uniform energy
-        energy = self.features.get('energy_ratio', 0.4)
-        if energy < 0.20:
-            score += 3.5
-        elif energy > 0.55:
-            score -= 2.5
-        
-        # AI voices lack high-frequency content
-        zcr = self.features.get('zero_crossing_rate', 0.1)
-        if zcr < 0.04:
-            score += 2.5
-        elif zcr > 0.12:
+        elif pitch_cons < 0.65:
             score -= 2.0
+            
+        # 2. Pitch Jitter (Artifact AI: high micro-variations)
+        # Human jitter is usually 0.01-0.03. AI artifacts often > 0.04
+        jitter = self.features.get('pitch_jitter', 0.03)
+        if jitter > 0.038:
+            score += 5.5  # High jitter artifact found in AI samples
+        elif jitter < 0.008:
+            score += 3.5  # Too robotic AI
         
-        # AI voices have lower spectral contrast
-        contrast = self.features.get('spectral_contrast', 0)
-        if contrast < 5.0:
-            score += 2.0
-        elif contrast > 7.0:
-            score -= 1.5
+        # 3. Spectral Flux (Artifact AI: high spectral noise)
+        flux = self.features.get('spectral_flux', 0.15)
+        if flux > 0.18:
+            score += 5.5  # High spectral flux artifact
+        elif flux < 0.12:
+            score += 3.0  # Too smooth AI
+            
+        # 4. MFCC Variance (Repetition)
+        mfcc_var = self.features.get('mfcc_variance', 0.5)
+        if mfcc_var < 0.38:
+            score += 4.0
+        elif mfcc_var > 0.60:
+            score -= 2.5
+            
+        # 5. Onset Regularity (Timing)
+        onset_reg = self.features.get('onset_regularity', 0.5)
+        if onset_reg > 0.82:
+            score += 4.0
+        elif onset_reg < 0.65:
+            score -= 2.5
+            
+        # 6. Energy Ratio (Consistency)
+        energy = self.features.get('energy_ratio', 0.4)
+        if energy < 0.25:
+            score += 3.0
         
+        # 7. Zero Crossing Rate (Artifacts/Noise)
+        zcr = self.features.get('zero_crossing_rate', 0.1)
+        if zcr > 0.13: # High frequency noise artifacts
+            score += 2.5
+            
         return score
     
     def classify(self):
@@ -313,11 +301,11 @@ class VoiceClassifier:
         
         # Convert to confidence (0-1 range)
         # Higher AI score means more likely AI
-        confidence = 1.0 / (1.0 + np.exp(-ai_score / 5.0))  # Sigmoid function
-        confidence = np.clip(confidence, 0.0, 1.0)
+        confidence = 1.0 / (1.0 + np.exp(-ai_score / 4.0))  # Sigmoid function
+        confidence = np.clip(confidence, 0.01, 0.99)
         
         # Decide classification
-        classification = 'AI_GENERATED' if confidence > 0.48 else 'HUMAN'
+        classification = 'AI_GENERATED' if confidence >= 0.50 else 'HUMAN'
         
         # Generate explanation
         explanation = self.get_explanation(confidence)
@@ -330,16 +318,16 @@ class VoiceClassifier:
     
     def get_explanation(self, confidence):
         """Generate explanation for classification"""
-        if confidence > 0.65:
-            return "Strong AI voice characteristics: artificial pitch patterns and spectral smoothness detected"
+        if confidence > 0.85:
+            return "Unnatural pitch consistency and robotic speech patterns detected"
+        elif confidence > 0.70:
+            return "AI voice characteristics detected: artificial voice signatures and spectral artifacts"
         elif confidence > 0.50:
-            return "AI voice characteristics detected: unnaturally consistent pitch and regular timing patterns"
-        elif confidence > 0.48:
-            return "Likely AI-generated voice with artificial voice characteristics"
-        elif confidence < 0.35:
-            return "Strong human speech characteristics with natural variation and complexity"
+            return "Likely AI-generated voice with subtle artificial characteristics"
+        elif confidence < 0.30:
+            return "Natural human speech with high complexity and organic variation"
         else:
-            return "Natural human voice detected with typical speech dynamics and variation"
+            return "Voice appears human with typical natural speech dynamics"
 
 
 # API Routes
