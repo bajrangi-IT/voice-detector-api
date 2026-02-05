@@ -301,7 +301,7 @@ class VoiceClassifier:
         
         # Convert to confidence (0-1 range)
         # Higher AI score means more likely AI
-        confidence = 1.0 / (1.0 + np.exp(-ai_score / 4.0))  # Sigmoid function
+        confidence = 1.0 / (1.0 + np.exp(-ai_score / 3.0))  # Sigmoid function
         confidence = np.clip(confidence, 0.01, 0.99)
         
         # Decide classification
@@ -318,7 +318,7 @@ class VoiceClassifier:
     
     def get_explanation(self, confidence):
         """Generate explanation for classification"""
-        if confidence > 0.85:
+        if confidence > 0.88:
             return "Unnatural pitch consistency and robotic speech patterns detected"
         elif confidence > 0.70:
             return "AI voice characteristics detected: artificial voice signatures and spectral artifacts"
