@@ -9,6 +9,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import base64
 import io
+import gc
 from datetime import datetime
 import logging
 
@@ -402,8 +403,18 @@ def detect_voice():
     
     language, audio_format, audio_base64 = result
     
+    # Log incoming request size
+    logger.info(f"Processing request: {len(audio_base64)} bytes base64")
+
     # Decode audio
     audio_bytes, error = decode_audio(audio_base64)
+    
+    # AGGRESSIVE MEMORY CLEANUP: Free the base64 string (~30% of RAM)
+    del audio_base64
+    del data
+    del result
+    gc.collect()
+
     if error:
         logger.warning(f"Decode error: {error}")
         return jsonify({
@@ -413,6 +424,11 @@ def detect_voice():
     
     # Load audio
     audio, sr, error = load_audio(audio_bytes)
+    
+    # AGGRESSIVE MEMORY CLEANUP: Free the audio bytes
+    del audio_bytes
+    gc.collect()
+
     if error:
         logger.warning(f"Load error: {error}")
         return jsonify({
@@ -425,6 +441,12 @@ def detect_voice():
         extractor = FeatureExtractor(audio, sr)
         features = extractor.extract_all()
         logger.info(f"Features extracted for {language}")
+        
+        # Free heavy audio array
+        del audio
+        del extractor
+        gc.collect()
+        
     except Exception as e:
         logger.error(f"Feature extraction error: {e}")
         return jsonify({
