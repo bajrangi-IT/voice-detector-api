@@ -56,8 +56,8 @@ def validate_request(data):
     if not data:
         return False, "No data provided"
     
-    language = data.get('language', '').strip()
-    audio_format = data.get('audioFormat', '').lower()
+    language = data.get('language', '').strip().title()
+    audio_format = data.get('audioFormat', '').lower().lstrip('.')
     audio_base64 = data.get('audioBase64', '')
     
     if language not in LANGUAGES:
