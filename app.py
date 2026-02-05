@@ -344,6 +344,20 @@ class VoiceClassifier:
 
 # API Routes
 
+@app.route('/', methods=['GET'])
+def index():
+    """Root route for verification"""
+    return jsonify({
+        'status': 'online',
+        'message': 'Voice Detection API is running',
+        'endpoints': {
+            'detection': '/api/voice-detection',
+            'health': '/api/health',
+            'stats': '/api/stats'
+        }
+    }), 200
+
+
 @app.route('/api/voice-detection', methods=['POST'])
 def detect_voice():
     """Main endpoint for voice detection"""
@@ -469,28 +483,28 @@ def stats():
 
 @app.errorhandler(400)
 def bad_request(error):
-    return jsonify({'status': 'error', 'message': 'Invalid API key or malformed request'}), 400
+    return jsonify({'status': 'error', 'message': 'Bad Request: Malformed JSON or missing data'}), 400
 
 
 @app.errorhandler(401)
 def unauthorized(error):
-    return jsonify({'status': 'error', 'message': 'Invalid API key or malformed request'}), 401
+    return jsonify({'status': 'error', 'message': 'Unauthorized: Invalid API key'}), 401
 
 
 @app.errorhandler(404)
 def not_found(error):
-    return jsonify({'status': 'error', 'message': 'Invalid API key or malformed request'}), 404
+    return jsonify({'status': 'error', 'message': 'Resource not found. Use /api/voice-detection or /api/health'}), 404
 
 
 @app.errorhandler(405)
 def method_not_allowed(error):
-    return jsonify({'status': 'error', 'message': 'Invalid API key or malformed request'}), 405
+    return jsonify({'status': 'error', 'message': 'Method not allowed'}), 405
 
 
 @app.errorhandler(500)
 def server_error(error):
-    logger.error(f"Server error: {error}")
-    return jsonify({'status': 'error', 'message': 'Invalid API key or malformed request'}), 500
+    logger.error(f"Internal Server Error: {error}")
+    return jsonify({'status': 'error', 'message': 'Internal Server Error. Please check logs.'}), 500
 
 
 # Main
