@@ -7,8 +7,6 @@ Author: Voice Detection Team
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import librosa
-import numpy as np
 import base64
 import io
 from datetime import datetime
@@ -20,6 +18,17 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Try to import librosa with error handling
+try:
+    import librosa
+    LIBROSA_AVAILABLE = True
+except Exception as e:
+    logger.critical(f"Failed to import librosa: {e}")
+    LIBROSA_AVAILABLE = False
+    LIBROSA_ERROR = str(e)
+
+import numpy as np
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -77,6 +86,9 @@ def decode_audio(audio_base64):
 
 def load_audio(audio_bytes):
     """Load audio file using librosa"""
+    if not LIBROSA_AVAILABLE:
+        return None, None, f"Librosa not available: {LIBROSA_ERROR}"
+
     try:
         audio_file = io.BytesIO(audio_bytes)
         audio, sr = librosa.load(audio_file, sr=22050, duration=30)
@@ -106,6 +118,9 @@ class FeatureExtractor:
     
     def extract_pitch_features(self):
         """Extract pitch-based features"""
+        if not LIBROSA_AVAILABLE:
+            return {'pitch_consistency': 0.0, 'pitch_jitter': 0.0}
+            
         try:
             f0 = librosa.yin(self.audio, fmin=50, fmax=500, trough_threshold=0.1)
             f0_valid = f0[f0 > 0]
@@ -134,6 +149,9 @@ class FeatureExtractor:
     
     def extract_spectral_features(self):
         """Extract spectral features"""
+        if not LIBROSA_AVAILABLE:
+            return {'spectral_centroid': 0.0, 'spectral_flux': 0.0, 'spectral_contrast': 0.0}
+
         try:
             # Mel spectrogram
             S = librosa.feature.melspectrogram(y=self.audio, sr=self.sr, n_mels=128)
@@ -163,6 +181,9 @@ class FeatureExtractor:
     
     def extract_mfcc_features(self):
         """Extract MFCC features - voice identity"""
+        if not LIBROSA_AVAILABLE:
+            return {'mfcc_variance': 0.0}
+
         try:
             mfcc = librosa.feature.mfcc(y=self.audio, sr=self.sr, n_mfcc=13)
             
@@ -178,6 +199,9 @@ class FeatureExtractor:
     
     def extract_temporal_features(self):
         """Extract timing-based features"""
+        if not LIBROSA_AVAILABLE:
+             return {'onset_regularity': 0.0, 'zero_crossing_rate': 0.0}
+
         try:
             # Onset detection - detect speech segments
             onset_env = librosa.onset.onset_strength(y=self.audio, sr=self.sr)
@@ -208,6 +232,9 @@ class FeatureExtractor:
     
     def extract_energy_features(self):
         """Extract energy-based features"""
+        if not LIBROSA_AVAILABLE:
+            return {'energy_ratio': 0.0}
+
         try:
             stft = np.abs(librosa.stft(self.audio))
             power = np.abs(stft) ** 2
@@ -338,6 +365,7 @@ def index():
     return jsonify({
         'status': 'online',
         'message': 'Voice Detection API is running',
+        'librosa_available': LIBROSA_AVAILABLE,
         'endpoints': {
             'detection': '/api/voice-detection',
             'health': '/api/health',
